@@ -50,6 +50,7 @@ var (
 	reAnyArticle      = regexp.MustCompile(`(?is)<article\b[^>]*>.*?</article>`)
 	reHuangguoLink    = regexp.MustCompile(`(?is)<a\b[^>]*href=["']([^"']*/(?:series|video)/([^"'/?#]+)[^"']*)["'][^>]*>.*?</a>`)
 	reAIEpisodeLink   = regexp.MustCompile(`(?is)<a\b[^>]*href=["']([^"']*/video/[^"']+)["'][^>]*>.*?</a>`)
+	reAIEpisodeKeyNumber = regexp.MustCompile(`(?i)^ep-0*(\d+)$`)
 	reTitleTag        = regexp.MustCompile(`(?is)<title[^>]*>(.*?)</title>`)
 	reH1Tag           = regexp.MustCompile(`(?is)<h1[^>]*>(.*?)</h1>`)
 	reDescMeta        = regexp.MustCompile(`(?is)<meta\b[^>]*(?:name|property)=["'](?:description|og:description)["'][^>]*content=["']([^"']+)["'][^>]*>`)
@@ -754,6 +755,14 @@ func parseHuangguoVideoCards(rawHTML, pageURL string) []Drama {
 
 func parseHuangguoAIEpisodes(rawHTML, pageURL, sourceID string) []providerEpisode {
 	matches := reAIEpisodeLink.FindAllStringSubmatchIndex(rawHTML, -1)
+	// 改版后的播放页侧栏会推荐其他短剧；能识别出本剧链接时只保留本剧分集。
+	own := false
+	for _, m := range matches {
+		if len(m) >= 4 && m[2] >= 0 && m[3] >= 0 && aiEpisodeOwned(rawHTML[m[2]:m[3]], sourceID) {
+			own = true
+			break
+		}
+	}
 	seen := map[string]bool{}
 	var episodes []providerEpisode
 	usedIndex := map[int]bool{}
@@ -762,10 +771,16 @@ func parseHuangguoAIEpisodes(rawHTML, pageURL, sourceID string) []providerEpisod
 			continue
 		}
 		href := rawHTML[m[2]:m[3]]
+		if own && !aiEpisodeOwned(href, sourceID) {
+			continue
+		}
 		fullURL := resolveProviderURL(pageURL, href)
 		linkHTML := rawHTML[m[0]:m[1]]
 		title := firstNonEmpty(extractAttr(linkHTML, "title", "aria-label"), cleanText(linkHTML))
 		key := aiEpisodeKey(href, sourceID)
+		if key == "" && own {
+			key = "ep-1"
+		}
 		if key == "" {
 			key = fmt.Sprintf("auto-%d", len(episodes)+1)
 		}
@@ -774,7 +789,16 @@ func parseHuangguoAIEpisodes(rawHTML, pageURL, sourceID string) []providerEpisod
 		}
 		seen[key] = true
 		seen[fullURL] = true
-		idx := episodeIndex(title, 0)
+		idx := 0
+		if own {
+			if n := reAIEpisodeKeyNumber.FindStringSubmatch(key); len(n) > 1 {
+				idx, _ = strconv.Atoi(n[1])
+				title = fmt.Sprintf("第%d集", idx)
+			}
+		}
+		if idx <= 0 {
+			idx = episodeIndex(title, 0)
+		}
 		if idx <= 0 {
 			idx = len(episodes) + 1
 		}
@@ -980,6 +1004,20 @@ func aiEpisodeKey(href, sourceID string) string {
 		return ""
 	}
 	return cleanID(strings.Join(parts, "-"))
+}
+
+// aiEpisodeOwned 判断链接是否属于 sourceID 对应的短剧（/video/{id}/ 或 /video/{id}/ep-N/）。
+func aiEpisodeOwned(href, sourceID string) bool {
+	if sourceID == "" {
+		return false
+	}
+	u, err := url.Parse(html.UnescapeString(href))
+	path := href
+	if err == nil {
+		path = u.Path
+	}
+	path = strings.Trim(strings.TrimPrefix(path, "/video/"), "/")
+	return strings.Split(path, "/")[0] == sourceID
 }
 
 func huangguoVideoSourceID(href string) (path, sourceID string) {
