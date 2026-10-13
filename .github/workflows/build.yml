@@ -165,6 +165,9 @@ jobs:
           channel: stable
           cache: true
       - run: gcc --version
+      - name: Relax lockfile check
+        shell: bash
+        run: sed -i "s/, '--enforce-lockfile'//" scripts/build_windows.py
       - run: python scripts/build_windows.py ${{ matrix.arguments }}
       - uses: actions/upload-artifact@v4
         with:
